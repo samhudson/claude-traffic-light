@@ -1,0 +1,321 @@
+#!/bin/bash
+# trafficlight: one menu-bar light per AI agent session.
+#   🔴 working · 🟡 needs you · 🟢 done · ⚫️ stopped on an error
+set -euo pipefail
+
+VERSION="1.0.0"
+SELF="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+LIBEXEC="$(cd "$SELF/../libexec" && pwd)"
+HOOK="$LIBEXEC/trafficlight-hook"
+MENU="$LIBEXEC/trafficlight-menu"
+LEGACY_PLUGINS="trafficlight.5s.sh agentlights.5s.sh claude-sessions.5s.sh"   # old SwiftBar plugins
+APP="$LIBEXEC/Trafficlight.app"
+LOGIN_LABEL="app.trafficlight"
+LOGIN_PLIST="$HOME/Library/LaunchAgents/$LOGIN_LABEL.plist"
+STATE_DIR="$HOME/.trafficlight/sessions"
+AGENTS=(claude codex gemini cursor copilot)
+# Matches our hook commands, plus older ones (agentlights, claude-traffic-light).
+OURS='trafficlight-hook|agentlights-hook|session-status\.sh'
+
+# Prefer the stable Homebrew opt path so upgrades don't break hook commands.
+if command -v brew >/dev/null 2>&1; then
+  OPT="$(brew --prefix)/opt/trafficlight/libexec"
+  [ -x "$OPT/trafficlight-hook" ] && HOOK="$OPT/trafficlight-hook" && MENU="$OPT/trafficlight-menu" && APP="$OPT/Trafficlight.app"
+fi
+
+info() { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33mwarning:\033[0m %s\n' "$*" >&2; }
+
+# Guarded so a removed install exits 0 silently instead of a hook error.
+hook_cmd() { echo "[ ! -x '$HOOK' ] || '$HOOK' $1 $2"; }
+
+# ── Per-agent config ──────────────────────────────────────────────────────────
+config_file() {
+  case "$1" in
+    claude)  echo "$HOME/.claude/settings.json" ;;
+    codex)   echo "$HOME/.codex/hooks.json" ;;
+    gemini)  echo "$HOME/.gemini/settings.json" ;;
+    cursor)  echo "$HOME/.cursor/hooks.json" ;;
+    copilot) echo "$HOME/.copilot/hooks/trafficlight.json" ;;
+  esac
+}
+events() {
+  case "$1" in
+    claude)  echo "SessionStart UserPromptSubmit PostToolUse PermissionRequest Notification Stop StopFailure SessionEnd" ;;
+    codex)   echo "SessionStart UserPromptSubmit PostToolUse PermissionRequest Stop Interrupt SessionEnd" ;;
+    gemini)  echo "SessionStart BeforeAgent AfterTool Notification AfterAgent SessionEnd" ;;
+    cursor)  echo "sessionStart beforeSubmitPrompt postToolUse stop sessionEnd" ;;
+    copilot) echo "sessionStart userPromptSubmitted postToolUse agentStop sessionEnd" ;;
+  esac
+}
+display() {
+  case "$1" in
+    claude) echo "Claude Code" ;; codex) echo "Codex" ;; gemini) echo "Gemini CLI" ;;
+    cursor) echo "Cursor" ;; copilot) echo "Copilot (VS Code)" ;;
+  esac
+}
+detected() {
+  case "$1" in
+    claude)  [ -d "$HOME/.claude" ] || command -v claude >/dev/null ;;
+    codex)   [ -d "$HOME/.codex" ] || command -v codex >/dev/null ;;
+    gemini)  [ -d "$HOME/.gemini" ] || command -v gemini >/dev/null ;;
+    cursor)  [ -d "$HOME/.cursor" ] || [ -d /Applications/Cursor.app ] ;;
+    copilot) [ -d "$HOME/.copilot" ] || ls -d "$HOME"/.vscode/extensions/github.copilot* >/dev/null 2>&1 ;;
+  esac
+}
+
+# Each agent's own folder. If trafficlight creates it (agent not installed yet),
+# a marker records that, so turning the agent off again leaves nothing behind.
+agent_root() {
+  case "$1" in
+    claude) echo "$HOME/.claude" ;; codex) echo "$HOME/.codex" ;; gemini) echo "$HOME/.gemini" ;;
+    cursor) echo "$HOME/.cursor" ;; copilot) echo "$HOME/.copilot" ;;
+  esac
+}
+CREATED="$HOME/.trafficlight/created"
+
+# Remove what trafficlight created for an agent, but only if nothing else has
+# been put there since: other settings or other hooks keep the folder.
+cleanup_created() {
+  local agent="$1" root file
+  [ -f "$CREATED/$agent" ] || return 0
+  root=$(agent_root "$agent"); file=$(config_file "$agent")
+  if [ -f "$file" ] && ! jq -e 'del(.hooks, .version) | length == 0' "$file" >/dev/null 2>&1; then rm -f "$CREATED/$agent"; return 0; fi
+  if [ -f "$file" ] && jq -e '(.hooks // {}) | length > 0' "$file" >/dev/null 2>&1; then rm -f "$CREATED/$agent"; return 0; fi
+  rm -f "$file" "$file.bak.trafficlight" "$file.bak.agentlights"
+  find "$root" -depth -type d -empty -delete 2>/dev/null
+  rm -f "$CREATED/$agent"
+  [ -e "$root" ] || info "$(display "$agent"): removed ${root/#$HOME/~} (trafficlight created it)"
+}
+
+# Claude, Codex and Gemini share a format: hooks.<Event> = [{hooks:[{type,command,timeout}]}]
+strip_nested() {
+  jq --arg re "$OURS" '
+    if .hooks then
+      .hooks |= with_entries(
+        .value |= (map(.hooks |= map(select((.command // "") | test($re) | not)))
+                   | map(select(.hooks | length > 0))))
+      | .hooks |= with_entries(select(.value | length > 0))
+    else . end'
+}
+# Cursor: {version:1, hooks:{event:[{command}]}}
+strip_flat() {
+  jq --arg re "$OURS" '
+    if .hooks then
+      .hooks |= with_entries(.value |= map(select((.command // "") | test($re) | not)))
+      | .hooks |= with_entries(select(.value | length > 0))
+    else . end'
+}
+
+install_agent() {
+  local agent="$1" file tmp ev cmd timeout
+  file="$(config_file "$agent")"
+  [ -e "$(agent_root "$agent")" ] || { mkdir -p "$CREATED"; touch "$CREATED/$agent"; }
+  mkdir -p "$(dirname "$file")"
+  tmp=$(mktemp)
+  case "$agent" in
+    claude|codex|gemini)
+      timeout=5; [ "$agent" = gemini ] && timeout=5000   # Gemini uses milliseconds
+      [ -f "$file" ] || echo '{}' > "$file"
+      cp "$file" "$file.bak.trafficlight"
+      strip_nested < "$file" > "$tmp"
+      for ev in $(events "$agent"); do
+        cmd="$(hook_cmd "$agent" "$ev")"
+        jq --arg ev "$ev" --arg c "$cmd" --argjson t "$timeout" \
+          '.hooks[$ev] = ((.hooks[$ev] // []) + [{hooks:[{type:"command", command:$c, timeout:$t}]}])' \
+          "$tmp" > "$tmp.2" && mv "$tmp.2" "$tmp"
+      done ;;
+    cursor)
+      [ -f "$file" ] || echo '{"version":1,"hooks":{}}' > "$file"
+      cp "$file" "$file.bak.trafficlight"
+      strip_flat < "$file" | jq '.version //= 1' > "$tmp"
+      for ev in $(events "$agent"); do
+        cmd="$(hook_cmd "$agent" "$ev")"
+        jq --arg ev "$ev" --arg c "$cmd" '.hooks[$ev] = ((.hooks[$ev] // []) + [{command:$c}])' \
+          "$tmp" > "$tmp.2" && mv "$tmp.2" "$tmp"
+      done ;;
+    copilot)
+      # Our own file in ~/.copilot/hooks/, so uninstall is just deleting it.
+      echo '{"version":1,"hooks":{}}' > "$tmp"
+      for ev in $(events "$agent"); do
+        cmd="$(hook_cmd "$agent" "$ev")"
+        jq --arg ev "$ev" --arg c "$cmd" '.hooks[$ev] = [{type:"command", command:$c, timeoutSec:5}]' \
+          "$tmp" > "$tmp.2" && mv "$tmp.2" "$tmp"
+      done ;;
+  esac
+  mv "$tmp" "$file"
+  info "$(display "$agent"): hooks added to ${file/#$HOME/~}"
+}
+
+uninstall_agent() {
+  local agent="$1" file tmp
+  file="$(config_file "$agent")"
+  [ -f "$file" ] || { cleanup_created "$agent"; return 0; }
+  case "$agent" in
+    copilot) rm -f "$file" ;;
+    cursor)  tmp=$(mktemp); strip_flat < "$file" > "$tmp" && mv "$tmp" "$file" ;;
+    *)       tmp=$(mktemp); strip_nested < "$file" > "$tmp" && mv "$tmp" "$file" ;;
+  esac
+  info "$(display "$agent"): hooks removed"
+  cleanup_created "$agent"
+}
+
+agent_installed() {
+  local file; file="$(config_file "$1")"
+  [ -f "$file" ] && jq -e '[.. | objects | .command? // empty | strings | select(test("trafficlight-hook"))] | length > 0' "$file" >/dev/null 2>&1
+}
+
+# Tests (and the Settings window's per-agent switches) skip launching the app.
+test_mode() { [ -n "${TRAFFICLIGHT_PLUGIN_DIR:-}${TRAFFICLIGHT_NO_LAUNCH:-}" ]; }
+has_screen() { [ -z "${SSH_CONNECTION:-}" ] && [ "$(launchctl managername 2>/dev/null)" = Aqua ]; }
+
+# Agents to act on: explicit args, or every detected agent. --no-app is a flag.
+pick_agents() {
+  local a named=0
+  for a in "$@"; do
+    [ "$a" = "--no-app" ] && continue
+    named=1
+    case " ${AGENTS[*]} " in *" $a "*) echo "$a" ;; *) echo "unknown agent: $a (choose from: ${AGENTS[*]})" >&2; exit 1 ;; esac
+  done
+  if [ $named = 0 ]; then for a in "${AGENTS[@]}"; do if detected "$a"; then echo "$a"; fi; done; fi
+}
+has_flag() { local f="$1" a; shift; for a in "$@"; do [ "$a" = "$f" ] && return 0; done; return 1; }
+
+# ── The menu bar app: our own login item, no SwiftBar ────────────────────────
+app_running() { pgrep -xq Trafficlight; }
+remove_legacy() {
+  local dir a
+  dir="$(defaults read com.ameba.SwiftBar PluginDirectory 2>/dev/null || echo "$HOME/.swiftbar/plugins")"; dir="${dir/#\~/$HOME}"
+  for a in $LEGACY_PLUGINS; do
+    if [ -L "$dir/$a" ] || [ -f "$dir/$a" ]; then rm -f "$dir/$a"; info "Removed the old SwiftBar plugin ($a)"; fi
+  done
+  # The old Homebrew service ran SwiftBar; the app's login item replaces it.
+  if launchctl print "gui/$(id -u)/sh.brew.trafficlight" >/dev/null 2>&1; then
+    launchctl bootout "gui/$(id -u)/sh.brew.trafficlight" 2>/dev/null || true
+    rm -f "$HOME/Library/LaunchAgents/sh.brew.trafficlight.plist"
+    info "Stopped the old login service (it ran SwiftBar)"
+  fi
+}
+# State left by older versions (claude-traffic-light, agentlights).
+remove_old_state() { rm -rf "$HOME/.claude/session-status" "$HOME/.agentlights"; rm -f "$HOME/.copilot/hooks/agentlights.json"; }
+write_login_item() {
+  mkdir -p "$(dirname "$LOGIN_PLIST")"
+  cat > "$LOGIN_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>$LOGIN_LABEL</string>
+  <key>ProgramArguments</key><array><string>$APP/Contents/MacOS/Trafficlight</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>LimitLoadToSessionType</key><string>Aqua</string>
+  <key>ProcessType</key><string>Interactive</string>
+</dict></plist>
+PLIST
+}
+start_app() {
+  launchctl bootout "gui/$(id -u)/$LOGIN_LABEL" 2>/dev/null || true
+  launchctl bootstrap "gui/$(id -u)" "$LOGIN_PLIST" 2>/dev/null || true
+  local i; for i in 1 2 3 4 5 6 7 8 9 10; do app_running && return 0; sleep 0.3; done
+  open -g "$APP"   # fallback if launchd didn't start it
+}
+stop_app() {
+  launchctl bootout "gui/$(id -u)/$LOGIN_LABEL" 2>/dev/null || true
+  app_running && { osascript -e 'tell application id "app.trafficlight" to quit' >/dev/null 2>&1 || pkill -x Trafficlight; }
+  return 0
+}
+
+# ── Commands ──────────────────────────────────────────────────────────────────
+cmd_install() {
+  command -v jq >/dev/null || { echo "jq is required (brew install jq)" >&2; exit 1; }
+  local first=0; [ -d "$STATE_DIR" ] || first=1
+  local agents; agents=$(pick_agents "$@")
+  [ -z "$agents" ] && { warn "no supported agents found; name them, e.g. trafficlight install claude cursor"; exit 1; }
+  mkdir -p "$STATE_DIR"
+  for a in $agents; do install_agent "$a"; done
+  has_flag --no-app "$@" && return 0       # just the hooks (Settings window switches)
+
+  remove_old_state
+  write_login_item
+  if test_mode; then info "Login item written (test mode: not started)"; return 0; fi
+  remove_legacy
+  if [ -d "$APP" ]; then
+    start_app; info "Trafficlight is in your menu bar, and starts at login"
+  else
+    warn "Trafficlight.app not found at ${APP/#$HOME/~}. Reinstall with: brew reinstall trafficlight"
+  fi
+  info "Done. Restart running agent sessions so they pick up the hooks."
+  # First install with a screen: open Settings to confirm the agents.
+  [ "$first" = 1 ] && has_screen && [ -d "$APP" ] && open -g "trafficlight://settings?welcome=1"
+  return 0
+}
+
+cmd_uninstall() {
+  # Agents named: remove just their hooks. Nothing named: remove everything.
+  local named a agents
+  named=$(for a in "$@"; do [ "$a" = "--no-app" ] || echo "$a"; done)
+  if [ -n "$named" ]; then agents=$(pick_agents $named); else agents="${AGENTS[*]}"; fi
+  for a in $agents; do uninstall_agent "$a"; done
+  if [ -z "$named" ] && ! has_flag --no-app "$@"; then
+    test_mode || { stop_app; remove_legacy; }
+    rm -f "$LOGIN_PLIST"
+    rm -rf "$HOME/.trafficlight"
+    info "Uninstalled: hooks, menu bar app and login item removed."
+  fi
+}
+
+cmd_status() {
+  local ok=0 a
+  for a in "${AGENTS[@]}"; do
+    if agent_installed "$a"; then printf '  🟢 %-18s hooks installed\n' "$(display "$a")"
+    elif detected "$a"; then printf '  🟡 %-18s detected, not installed (trafficlight install %s)\n' "$(display "$a")" "$a"
+    else printf '  ⚪️ %-18s not found\n' "$(display "$a")"; fi
+  done
+  if app_running; then echo "app:      running in the menu bar"; else echo "app:      not running (trafficlight install)"; ok=1; fi
+  if [ -f "$LOGIN_PLIST" ]; then echo "login:    starts at login"; else echo "login:    not set"; ok=1; fi
+  echo "sessions: $(ls "$STATE_DIR"/*.json 2>/dev/null | wc -l | tr -d ' ') tracked"
+  return $ok
+}
+
+# Machine-readable agent list for the settings window.
+cmd_info() {
+  local a first=1
+  printf '['
+  for a in "${AGENTS[@]}"; do
+    [ $first = 1 ] || printf ','; first=0
+    jq -nc --arg id "$a" --arg name "$(display "$a")" \
+      --argjson detected "$(detected "$a" && echo true || echo false)" \
+      --argjson installed "$(agent_installed "$a" && echo true || echo false)" \
+      '{id: $id, name: $name, detected: $detected, installed: $installed}'
+  done
+  printf ']\n'
+}
+
+cmd_settings() {
+  if has_screen && [ -d "$APP" ]; then
+    app_running || start_app
+    open -g "trafficlight://settings"
+  else
+    cmd_status
+  fi
+}
+
+case "${1:-}" in
+  _info)     cmd_info ;;                          # used by the settings window
+  settings)  cmd_settings ;;
+  menu)      "$MENU" | sed -E 's/ \| (size|color|href|bash|tooltip|font|refresh)=.*$//; /^Settings…$/d; /^Refresh$/d' ;;
+  install)   shift; cmd_install "$@" ;;
+  uninstall) shift; cmd_uninstall "$@" ;;
+  status)    cmd_status ;;
+  --version|-v) echo "$VERSION" ;;
+  *) cat <<EOF
+usage: trafficlight settings                 open the settings window
+       trafficlight menu                     the menu as text (terminals, SSH)
+       trafficlight install [agent...]     wire up detected agents (or the ones named)
+       trafficlight uninstall [agent...]   remove hooks (everything, including the app, if none named)
+       trafficlight status
+       trafficlight --version
+agents: ${AGENTS[*]}
+EOF
+     exit 1 ;;
+esac

@@ -1,0 +1,34 @@
+#!/bin/bash
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:$PATH"
+LIBEXEC="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+CLI="$LIBEXEC/../bin/trafficlight"
+state=$("$LIBEXEC/trafficlight-state" 2>/dev/null)
+[ -z "$state" ] && state='{"now": 0, "rows": [], "counts": {}}'
+
+# Text menu, for `trafficlight menu` (terminals, SSH) and the tests.
+jq -r --arg cli "$CLI" '
+  def dot:   {working:"🔴", waiting:"🟡", done:"🟢", error:"⚫️"}[.] // "🟢";
+  def ago:   if . < 60 then "\(.)s" elif . < 3600 then "\(./60|floor)m" else "\(./3600|floor)h" end;
+  .now as $now | .rows as $rows | .counts as $n
+  | if ($rows | length) == 0 then
+      "🚦", "---", "No agent sessions | color=gray", "Start one and its light appears here | size=11 color=gray"
+    else
+      ($rows | map(.status | dot) | join("")),
+      "---",
+      ("🚦 trafficlight  " + ([ (if $n.waiting then "🟡 \($n.waiting)" else empty end),
+                               (if $n.working then "🔴 \($n.working)" else empty end),
+                               (if $n.error   then "⚫️ \($n.error)"   else empty end),
+                               (if $n.done    then "🟢 \($n.done)"    else empty end) ] | join("  "))
+       + " | size=12"),
+      "---",
+      ( $rows[] | "\(.status | dot) \(.name) · \(.who) · \(.label)"
+                  + (if .detail then " (\(.detail))" else "" end)
+                  + " · \(($now - .updated) | if . < 0 then 0 else . end | ago) ago"
+                  + " | href=file://\(.cwd) tooltip=\(.cwd)" )
+    end,
+  "---",
+  "🔴 working   🟡 needs you   🟢 done | size=11 color=gray",
+  "---",
+  "Settings… | bash=\"\($cli)\" param1=settings terminal=false",
+  "Refresh | refresh=true"
+' <<<"$state"

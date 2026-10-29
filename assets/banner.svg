@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="300" viewBox="0 0 900 300" role="img" aria-label="trafficlight: a menu-bar traffic light for your AI coding agents">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#14161c"/>
+      <stop offset="1" stop-color="#232733"/>
+    </linearGradient>
+    <linearGradient id="housing" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#2b2f3a"/>
+      <stop offset="0.5" stop-color="#3a3f4d"/>
+      <stop offset="1" stop-color="#2b2f3a"/>
+    </linearGradient>
+    <filter id="glow" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur stdDeviation="9"/>
+    </filter>
+    <radialGradient id="shine" cx="0.35" cy="0.3" r="0.7">
+      <stop offset="0" stop-color="#fff" stop-opacity="0.55"/>
+      <stop offset="0.4" stop-color="#fff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="900" height="300" rx="20" fill="url(#bg)"/>
+  <!-- road stripes -->
+  <g fill="#ffffff" opacity="0.05">
+    <rect x="300" y="262" width="70" height="8" rx="4"/>
+    <rect x="420" y="262" width="70" height="8" rx="4"/>
+    <rect x="540" y="262" width="70" height="8" rx="4"/>
+    <rect x="660" y="262" width="70" height="8" rx="4"/>
+    <rect x="780" y="262" width="70" height="8" rx="4"/>
+  </g>
+
+  <!-- pole + traffic light -->
+  <rect x="139" y="252" width="22" height="48" fill="#2b2f3a"/>
+  <rect x="96" y="22" width="108" height="236" rx="26" fill="url(#housing)" stroke="#4a5060" stroke-width="2"/>
+  <!-- visors -->
+  <g fill="#1b1e26">
+    <path d="M104 52 h92 v-8 a8 8 0 0 0 -8 -8 h-76 a8 8 0 0 0 -8 8 z"/>
+    <path d="M104 122 h92 v-8 a8 8 0 0 0 -8 -8 h-76 a8 8 0 0 0 -8 8 z"/>
+    <path d="M104 192 h92 v-8 a8 8 0 0 0 -8 -8 h-76 a8 8 0 0 0 -8 8 z"/>
+  </g>
+
+  <!-- unlit lenses -->
+  <circle cx="150" cy="80" r="27" fill="#3d1414"/>
+  <circle cx="150" cy="150" r="27" fill="#3d3010"/>
+  <circle cx="150" cy="220" r="27" fill="#123018"/>
+
+  <!-- lit lenses: cycle red (working) → amber (needs you) → green (done) -->
+  <g opacity="0">
+    <animate attributeName="opacity" values="1;1;0;0;0;0;1" keyTimes="0;0.3;0.33;0.66;0.97;0.99;1" dur="6s" repeatCount="indefinite"/>
+    <circle cx="150" cy="80" r="34" fill="#ff3b30" filter="url(#glow)" opacity="0.8"/>
+    <circle cx="150" cy="80" r="27" fill="#ff453a"/>
+    <circle cx="150" cy="80" r="27" fill="url(#shine)"/>
+  </g>
+  <g opacity="0">
+    <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.31;0.34;0.64;0.67;1" dur="6s" repeatCount="indefinite"/>
+    <circle cx="150" cy="150" r="34" fill="#ffcc00" filter="url(#glow)" opacity="0.8"/>
+    <circle cx="150" cy="150" r="27" fill="#ffd60a"/>
+    <circle cx="150" cy="150" r="27" fill="url(#shine)"/>
+  </g>
+  <g opacity="0">
+    <animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.65;0.68;0.97;1" dur="6s" repeatCount="indefinite"/>
+    <circle cx="150" cy="220" r="34" fill="#30d158" filter="url(#glow)" opacity="0.8"/>
+    <circle cx="150" cy="220" r="27" fill="#32d74b"/>
+    <circle cx="150" cy="220" r="27" fill="url(#shine)"/>
+  </g>
+
+  <!-- wordmark -->
+  <g font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Helvetica, Arial, sans-serif">
+    <text x="262" y="112" fill="#f5f5f7" font-size="56" font-weight="700" letter-spacing="-1">trafficlight</text>
+    <text x="264" y="154" fill="#a1a6b4" font-size="21">Know which AI agent needs you, at a glance.</text>
+
+    <!-- legend chips -->
+    <g font-size="17" font-weight="600">
+      <rect x="264" y="182" width="138" height="38" rx="19" fill="#ff453a" fill-opacity="0.14" stroke="#ff453a" stroke-opacity="0.5"/>
+      <circle cx="286" cy="201" r="7" fill="#ff453a"/>
+      <text x="302" y="207" fill="#ff8a80">working</text>
+
+      <rect x="414" y="182" width="156" height="38" rx="19" fill="#ffd60a" fill-opacity="0.12" stroke="#ffd60a" stroke-opacity="0.5"/>
+      <circle cx="436" cy="201" r="7" fill="#ffd60a"/>
+      <text x="452" y="207" fill="#ffe57a">needs you</text>
+
+      <rect x="582" y="182" width="108" height="38" rx="19" fill="#32d74b" fill-opacity="0.12" stroke="#32d74b" stroke-opacity="0.5"/>
+      <circle cx="604" cy="201" r="7" fill="#32d74b"/>
+      <text x="620" y="207" fill="#86efac">done</text>
+    </g>
+  </g>
+</svg>

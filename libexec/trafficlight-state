@@ -1,0 +1,90 @@
+#!/bin/bash
+# trafficlight-state: the current agent sessions as JSON, for the menu bar app
+# and the text menu. Merges hook state with Claude Code's own session registry,
+# prunes sessions that ended, and names each session.
+#
+#   {"now": ..., "rows": [{agent, who, status, label, name, cwd, updated, detail}],
+#    "counts": {"working": 1, ...}}
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:$PATH"
+STATE_DIR="$HOME/.trafficlight/sessions"
+CLAUDE_REGISTRY="$HOME/.claude/sessions"   # Claude Code's own registry: {pid, sessionId, cwd, status, name}
+now=$(date +%s)
+
+# Live Claude Code sessions (process still running).
+registry=$(
+  for reg in "$CLAUDE_REGISTRY"/*.json; do
+    [ -e "$reg" ] || continue
+    pid=$(jq -r '.pid // empty' "$reg" 2>/dev/null)
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && cat "$reg"
+  done | jq -s '.' 2>/dev/null
+)
+[ -z "$registry" ] && registry='[]'
+
+# Prune: Claude sessions whose process exited; anything silent for 12h.
+for f in "$STATE_DIR"/*.json; do
+  [ -e "$f" ] || continue
+  read -r agent sid updated < <(jq -r '[.agent, .session_id, (.updated // 0)] | @tsv' "$f" 2>/dev/null)
+  if [ "$agent" = "claude" ]; then
+    jq -e --arg s "$sid" 'any(.[]; .sessionId == $s)' <<<"$registry" >/dev/null && continue
+    if grep -lq "\"sessionId\":\"$sid\"" "$CLAUDE_REGISTRY"/*.json 2>/dev/null; then rm -f "$f"; continue; fi
+  fi
+  [ $((now - ${updated:-0})) -gt 43200 ] && rm -f "$f"
+done
+states=$(cat "$STATE_DIR"/*.json 2>/dev/null | jq -s '.' 2>/dev/null)
+[ -z "$states" ] && states='[]'
+
+# Claude Code's own session titles (the ones in the editor tab and /resume):
+# a renamed title wins over the AI-generated one.
+titles=$(
+  { jq -r '.[] | select(.agent == "claude") | .session_id' <<<"$states"; jq -r '.[].sessionId' <<<"$registry"; } \
+  | sort -u | while read -r sid; do
+      [ -z "$sid" ] && continue
+      t=$(ls "$HOME"/.claude/projects/*/"$sid".jsonl 2>/dev/null | head -1)
+      [ -n "$t" ] || continue
+      title=$(grep -h '"type":"custom-title"' "$t" | tail -1 | jq -r '.customTitle // .title // empty' 2>/dev/null)
+      [ -z "$title" ] && title=$(grep -h '"type":"ai-title"' "$t" | tail -1 | jq -r '.aiTitle // empty' 2>/dev/null)
+      [ -n "$title" ] && jq -nc --arg s "$sid" --arg t "$title" '{($s): $t}'
+    done | jq -s 'add // {}' 2>/dev/null
+)
+[ -z "$titles" ] && titles='{}'
+
+jq -c -n --argjson reg "$registry" --argjson states "$states" --argjson titles "$titles" --argjson now "$now" '
+  def lbl:   {working:"working…", waiting:"needs you", done:"done", error:"stopped on an error"}[.] // .;
+  def rank:  {waiting:0, working:1, error:2, done:3}[.] // 4;
+  def who:   {claude:"Claude Code", codex:"Codex", gemini:"Gemini", cursor:"Cursor", copilot:"Copilot"}[.] // .;
+  def clip:  if length > 48 then .[0:47] + "…" else . end;
+
+  # Claude state, corrected by its registry: "working" but idle since means the
+  # turn was interrupted (Esc), so it is done.
+  ([ $states[] as $h
+     | ($reg | map(select($h.agent == "claude" and .sessionId == $h.session_id)) | first) as $r
+     | (($r.statusUpdatedAt // 0) / 1000 | floor) as $rt
+     | ($h + {tag: ($r.name // ($h.session_id | .[0:6])),
+              title: (if $h.agent == "claude" then ($titles[$h.session_id] // $h.title) else $h.title end)})
+     | if .agent == "claude" and .status == "working" and $r.status == "idle" and $rt > (.updated + 1)
+       then . + {status:"done", updated:$rt} else . end ]) as $tracked
+  # Claude sessions started before the hooks were installed: use the registry.
+  | ($tracked | map(select(.agent == "claude") | .session_id)) as $known
+  | ([ $reg[] | select(.sessionId as $s | $known | index($s) | not)
+       | {agent:"claude", session_id:.sessionId, cwd:.cwd, tag:(.name // (.sessionId | .[0:6])),
+          title:$titles[.sessionId],
+          status:(if .status == "busy" then "working" else "done" end),
+          updated:((.statusUpdatedAt // .startedAt // 0) / 1000 | floor)} ]) as $untracked
+  | ($tracked + $untracked | sort_by((.status | rank), -.updated)) as $all
+  # Name = folder; parent too when two share a folder name; session tag when
+  # two sessions of the same agent are in the very same folder.
+  | ($all | map(.cwd | split("/") | last)) as $names
+  | ($all | map("\(.agent):\(.cwd)")) as $paths
+  | [ $all[] | . as $s
+      | ($s.cwd | split("/")) as $p
+      | (if ($names | map(select(. == ($p | last))) | length) > 1
+         then ($p[-2:] | join("/")) else ($p | last) end) as $folder
+      | (if ($s.title // "") != "" then ($s.title | clip)
+         elif ($paths | map(select(. == "\($s.agent):\($s.cwd)")) | length) > 1
+         then "\($folder) [\($s.tag)]" else $folder end) as $name
+      | $s + {name: $name} ] as $rows
+  | { now: $now,
+      rows: [ $rows[] | {agent, who: (.agent | who), status, label: (.status | lbl), name, cwd,
+                         updated, detail, session_id} ],
+      counts: ($rows | group_by(.status) | map({key: .[0].status, value: length}) | from_entries) }
+'

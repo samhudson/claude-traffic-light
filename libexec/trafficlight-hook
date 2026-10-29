@@ -1,0 +1,94 @@
+#!/bin/bash
+# trafficlight hook: records an AI agent session's state for the menu-bar plugin.
+#
+#   trafficlight-hook <agent> <event>     (event JSON on stdin)
+#
+# agent: claude | codex | gemini | cursor | copilot
+# The event name is passed as an argument because not every agent includes it
+# in the payload. States:
+#   working  🔴  prompt submitted / tools running
+#   waiting  🟡  needs you: permission prompt, question
+#   done     🟢  turn finished or interrupted
+#   error    ⚫️  turn ended on an error
+set -u
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+DIR="$HOME/.trafficlight/sessions"
+mkdir -p "$DIR"
+
+agent="${1:-}"
+event="${2:-}"
+input=$(cat)
+[ -z "$agent" ] && exit 0
+[ -z "$event" ] && event=$(jq -r '.hook_event_name // .hookEventName // empty' <<<"$input" 2>/dev/null)
+
+field() { jq -r "$1 // empty" <<<"$input" 2>/dev/null; }
+cwd=$(field '.cwd // .workspace_roots[0]')
+sid=$(field '.session_id // .sessionId // .conversation_id // .conversationId')
+# Copilot doesn't always send a session id: fall back to one session per folder.
+[ -z "$sid" ] && [ -n "$cwd" ] && sid="dir-$(printf '%s' "$cwd" | shasum | cut -c1-12)"
+[ -z "$sid" ] && exit 0
+
+file="$DIR/$agent-$sid.json"
+detail=""
+status=""
+finish() {
+  # Cursor's beforeSubmitPrompt expects a decision on stdout.
+  [ "$agent/$event" = "cursor/beforeSubmitPrompt" ] && echo '{"continue": true}'
+  exit 0
+}
+
+case "$agent/$event" in
+  # session over: forget it
+  */SessionEnd|*/sessionEnd)
+    rm -f "$file"; finish ;;
+
+  # idle / finished
+  */SessionStart|*/sessionStart|claude/Stop|codex/Stop|codex/Interrupt|gemini/AfterAgent|copilot/agentStop)
+    status=done ;;
+  cursor/stop)
+    case "$(field '.status')" in
+      error) status=error; detail="error" ;;
+      *)     status=done ;;
+    esac ;;
+  claude/StopFailure)
+    status=error
+    detail=$(field '.error_type // .error.type // .error') ;;
+
+  # working
+  */UserPromptSubmit|*/PostToolUse|*/postToolUse|gemini/BeforeAgent|gemini/AfterTool|cursor/beforeSubmitPrompt|copilot/userPromptSubmitted)
+    status=working ;;
+
+  # needs you
+  claude/PermissionRequest|codex/PermissionRequest)
+    status=waiting ;;
+  claude/Notification)
+    # Only notifications that mean "blocked on you"; idle reminders, auth
+    # success, quota notices etc. are informational.
+    case "$(field '.notification_type')" in
+      permission_prompt|elicitation_dialog|elicitation_url_dialog|agent_needs_input) status=waiting ;;
+    esac ;;
+  gemini/Notification)
+    # Gemini's only notification type is ToolPermission.
+    status=waiting ;;
+esac
+[ -z "$status" ] && finish
+
+old=$(cat "$file" 2>/dev/null); [ -z "$old" ] && old='{}'
+# Title fallback for agents that don't name sessions: the first line of the
+# session's first prompt. Claude Code's own title is read from the transcript.
+prompt=$(field '.prompt // .userPrompt' | awk 'NF { print; exit }')
+transcript=$(field '.transcript_path')
+jq -n --argjson old "$old" --arg agent "$agent" --arg sid "$sid" --arg status "$status" \
+  --arg cwd "$cwd" --arg detail "$detail" --arg prompt "$prompt" --arg transcript "$transcript" \
+  --argjson ts "$(date +%s)" '
+  def clip: gsub("\\s+"; " ") | ltrimstr(" ") | rtrimstr(" ")
+            | if length > 48 then .[0:47] + "…" else . end;
+  ($old | if type == "object" then . else {} end)
+  + {agent:$agent, session_id:$sid, status:$status, updated:$ts}
+  + (if $cwd != "" then {cwd:$cwd} else {} end)
+  + (if $transcript != "" then {transcript:$transcript} else {} end)
+  + (if ($old.title // "") == "" and ($prompt | clip) != "" then {title: ($prompt | clip)} else {} end)
+  | if $detail != "" then .detail = $detail else del(.detail) end' \
+  > "$file.tmp" && mv "$file.tmp" "$file"
+
+finish

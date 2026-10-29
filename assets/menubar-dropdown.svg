@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="380" viewBox="0 0 900 380" role="img" aria-label="Mock-up of the macOS menu bar showing one light per AI agent session and the dropdown listing each session">
+  <defs>
+    <linearGradient id="wall" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3b2a6b"/>
+      <stop offset="0.55" stop-color="#1f4d7a"/>
+      <stop offset="1" stop-color="#0f6b5f"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#000" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+  <rect width="900" height="380" rx="20" fill="url(#wall)"/>
+
+  <g font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Helvetica, Arial, sans-serif">
+    <!-- menu bar -->
+    <path d="M0 20 a20 20 0 0 1 20 -20 h860 a20 20 0 0 1 20 20 v14 h-900 z" fill="#1c1c1e" fill-opacity="0.72"/>
+    <text x="50" y="23" fill="#fff" font-size="14" font-weight="600">Code</text>
+    <text x="100" y="23" fill="#e5e5ea" font-size="14">File</text>
+    <text x="138" y="23" fill="#e5e5ea" font-size="14">Edit</text>
+    <text x="178" y="23" fill="#e5e5ea" font-size="14">View</text>
+    <text x="740" y="23" fill="#e5e5ea" font-size="14">Wed 28 Oct  9:41</text>
+
+    <!-- our dots, highlighted -->
+    <rect x="566" y="5" width="96" height="24" rx="6" fill="#ffffff" fill-opacity="0.18"/>
+    <circle cx="582" cy="17" r="7" fill="#ffd60a"/>
+    <circle cx="602" cy="17" r="7" fill="#ff453a"/>
+    <circle cx="622" cy="17" r="7" fill="#ff453a"/>
+    <circle cx="642" cy="17" r="7" fill="#32d74b"/>
+    <!-- other menu-bar icons -->
+    <g fill="#e5e5ea" opacity="0.9">
+      <rect x="680" y="11" width="18" height="12" rx="3" fill="none" stroke="#e5e5ea" stroke-width="1.6"/>
+      <rect x="682" y="13" width="11" height="8" rx="1.5"/>
+      <rect x="698" y="15" width="2" height="4" rx="1"/>
+      <path d="M716 21 a9 9 0 0 1 12 -10 M719 21 a5 5 0 0 1 7 -6" stroke="#e5e5ea" stroke-width="1.8" fill="none" stroke-linecap="round"/>
+    </g>
+
+    <!-- dropdown -->
+    <g filter="url(#shadow)">
+      <rect x="440" y="40" width="430" height="312" rx="12" fill="#2c2c2e" fill-opacity="0.96" stroke="#48484a"/>
+    </g>
+    <text x="458" y="72" fill="#f5f5f7" font-size="14" font-weight="600">🚦 trafficlight</text>
+    <g font-size="13" fill="#d1d1d6">
+      <circle cx="590" cy="67" r="5" fill="#ffd60a"/><text x="600" y="72">1</text>
+      <circle cx="626" cy="67" r="5" fill="#ff453a"/><text x="636" y="72">2</text>
+      <circle cx="662" cy="67" r="5" fill="#32d74b"/><text x="672" y="72">1</text>
+    </g>
+    <line x1="452" y1="88" x2="858" y2="88" stroke="#48484a"/>
+
+    <!-- session rows -->
+    <g font-size="14">
+      <rect x="448" y="96" width="414" height="34" rx="6" fill="#0a84ff"/>
+      <circle cx="468" cy="113" r="6.5" fill="#ffd60a"/>
+      <text x="484" y="118" fill="#fff"><tspan font-weight="600">Refactor billing service</tspan> · Claude Code · needs you</text>
+
+      <circle cx="468" cy="149" r="6.5" fill="#ff453a"/>
+      <text x="484" y="154" fill="#f5f5f7"><tspan font-weight="600">Fix the login redirect bug</tspan> · Cursor · working…</text>
+
+      <circle cx="468" cy="185" r="6.5" fill="#ff453a"/>
+      <text x="484" y="190" fill="#f5f5f7"><tspan font-weight="600">Add rate limiting to the API</tspan> · Codex · working…</text>
+
+      <circle cx="468" cy="221" r="6.5" fill="#32d74b"/>
+      <text x="484" y="226" fill="#f5f5f7"><tspan font-weight="600">Write onboarding docs</tspan> · Gemini · done</text>
+    </g>
+    <line x1="452" y1="246" x2="858" y2="246" stroke="#48484a"/>
+    <g font-size="12" fill="#8e8e93">
+      <circle cx="466" cy="268" r="5" fill="#ff453a"/><text x="476" y="272">working</text>
+      <circle cx="546" cy="268" r="5" fill="#ffd60a"/><text x="556" y="272">needs you</text>
+      <circle cx="636" cy="268" r="5" fill="#32d74b"/><text x="646" y="272">done</text>
+    </g>
+    <text x="458" y="304" fill="#f5f5f7" font-size="14">Refresh</text>
+    <text x="458" y="334" fill="#8e8e93" font-size="12">Click a session to open its folder</text>
+
+    <!-- caption on the left -->
+    <text x="40" y="130" fill="#fff" font-size="30" font-weight="700">One light per session.</text>
+    <text x="40" y="170" fill="#e5e5ea" font-size="18">Amber means an agent is</text>
+    <text x="40" y="196" fill="#e5e5ea" font-size="18">waiting on you.</text>
+    <text x="40" y="240" fill="#e5e5ea" font-size="18" opacity="0.8">Claude Code, Codex, Cursor,</text>
+    <text x="40" y="266" fill="#e5e5ea" font-size="18" opacity="0.8">Gemini and Copilot.</text>
+  </g>
+</svg>
