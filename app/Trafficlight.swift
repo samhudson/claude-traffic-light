@@ -488,6 +488,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let i = args.firstIndex(of: "--icon"), i + 1 < args.count {
             Renderer.iconset(to: URL(fileURLWithPath: args[i + 1])); NSApp.terminate(nil); return
         }
+        // One copy only: if another is already in the menu bar, leave it be.
+        let mine = NSRunningApplication.current
+        if NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+            .contains(where: { $0.processIdentifier != mine.processIdentifier }) {
+            NSApp.terminate(nil); return
+        }
         bar = MenuBar(openSettings: { [weak self] in self?.showSettings(welcome: false) })
         if args.contains("--welcome") { showSettings(welcome: true) } else if args.contains("--settings") { showSettings(welcome: false) }
     }

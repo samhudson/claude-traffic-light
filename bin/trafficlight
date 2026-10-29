@@ -3,7 +3,7 @@
 #   🔴 working · 🟡 needs you · 🟢 done · ⚫️ stopped on an error
 set -euo pipefail
 
-VERSION="1.0.0"
+VERSION="1.0.1"
 SELF="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 LIBEXEC="$(cd "$SELF/../libexec" && pwd)"
 HOOK="$LIBEXEC/trafficlight-hook"
@@ -214,10 +214,17 @@ write_login_item() {
 PLIST
 }
 start_app() {
+  local i
+  # Unload the previous login item and wait until launchd has let go of it;
+  # loading too early fails, which used to leave a second copy running.
   launchctl bootout "gui/$(id -u)/$LOGIN_LABEL" 2>/dev/null || true
-  launchctl bootstrap "gui/$(id -u)" "$LOGIN_PLIST" 2>/dev/null || true
-  local i; for i in 1 2 3 4 5 6 7 8 9 10; do app_running && return 0; sleep 0.3; done
-  open -g "$APP"   # fallback if launchd didn't start it
+  for i in 1 2 3 4 5 6 7 8 9 10; do launchctl print "gui/$(id -u)/$LOGIN_LABEL" >/dev/null 2>&1 || break; sleep 0.3; done
+  pkill -x Trafficlight 2>/dev/null || true                     # any copy started outside launchd
+  for i in 1 2 3 4 5 6 7 8 9 10; do app_running || break; sleep 0.2; done
+  launchctl bootstrap "gui/$(id -u)" "$LOGIN_PLIST" 2>/dev/null \
+    || { sleep 1; launchctl bootstrap "gui/$(id -u)" "$LOGIN_PLIST" 2>/dev/null; } || true
+  for i in 1 2 3 4 5 6 7 8 9 10; do app_running && return 0; sleep 0.3; done
+  open -g "$APP"   # last resort if launchd couldn't start it
 }
 stop_app() {
   launchctl bootout "gui/$(id -u)/$LOGIN_LABEL" 2>/dev/null || true
