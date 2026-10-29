@@ -1,0 +1,6 @@
+#!/bin/bash
+# script/release-notes vX.Y.Z[-rc.N]: that version's section of CHANGELOG.md.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+ver="${1:?usage: script/release-notes vX.Y.Z}"; ver="${ver#v}"; ver="${ver%%-rc.*}"
+awk -v v="$ver" '$0 ~ "^## \\[" v "\\]" {on=1; next} /^## \[/ {if (on) exit} on' CHANGELOG.md | sed '/./,$!d'

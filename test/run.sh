@@ -241,10 +241,13 @@ if command -v swiftc >/dev/null && [ "$(launchctl managername 2>/dev/null)" = Aq
 fi
 
 echo "release"
+check "release notes come from the changelog" 1 "$("$ROOT/script/release-notes" v1.0.1 | grep -c 'run only one copy')"
+check "  ...release candidates use their version's notes" 1 "$("$ROOT/script/release-notes" v1.0.1-rc.2 | grep -c 'run only one copy')"
 check "no em dashes in shipped files" 0 "$(cat "$ROOT"/bin/* "$ROOT"/libexec/trafficlight-* "$ROOT"/app/*.swift "$ROOT"/README.md "$ROOT"/assets/*.svg 2>/dev/null | grep -c '—')"
 check "no SwiftBar in the app or engine (the CLI mentions it only to migrate)" 0 "$(cat "$ROOT"/libexec/trafficlight-* "$ROOT"/app/*.swift | grep -ci 'swiftbar')"
 if tag=$(git -C "$ROOT" describe --tags --exact-match 2>/dev/null); then
-  check "CLI version matches tag $tag" "${tag#v}" "$("$CLI" --version)"
+  base="${tag#v}"; base="${base%%-rc.*}"
+  check "CLI version matches tag $tag" "$base" "$("$CLI" --version)"
 fi
 
 echo

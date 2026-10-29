@@ -1,0 +1,26 @@
+# Tests every push to main and every pull request, on macOS.
+# Read-only and no secrets, so pull requests from forks are safe to run.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Tests
+        run: ./test/run.sh
+      - name: Build the menu bar app (as brew install does)
+        run: script/build-app "$RUNNER_TEMP/app"

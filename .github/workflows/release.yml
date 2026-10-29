@@ -1,0 +1,78 @@
+# Publishes a release when a version tag is pushed (script/release does that).
+#   vX.Y.Z        GitHub Release + Homebrew tap update
+#   vX.Y.Z-rc.N   GitHub pre-release only (promote with script/release --promote)
+# Can also be run by hand on an existing tag, as a dry run by default.
+name: Release
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+", "v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag, e.g. v1.2.0
+        required: true
+      dry_run:
+        description: Check everything but publish nothing
+        type: boolean
+        default: true
+
+permissions:
+  contents: write   # create the GitHub Release
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+      NAME: trafficlight
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: The tag is a version and matches the code
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || { echo "::error::not a release tag: $TAG"; exit 1; }
+          code=$(grep -m1 '^VERSION=' "bin/$NAME" | cut -d'"' -f2)
+          base="${TAG#v}"; base="${base%%-rc.*}"
+          [ "$code" = "$base" ] || { echo "::error::bin/$NAME says $code but the tag is $TAG"; exit 1; }
+
+      - name: Tests
+        run: ./test/run.sh
+
+      - name: Build the menu bar app (as brew install does)
+        run: script/build-app "$RUNNER_TEMP/app"
+
+      - name: Source tarball, checksum and notes
+        run: |
+          v="${TAG#v}"
+          git archive --format=tar.gz --prefix="$NAME-$v/" -o "$RUNNER_TEMP/$NAME-$v.tar.gz" "$TAG"
+          (cd "$RUNNER_TEMP" && shasum -a 256 "$NAME-$v.tar.gz" > "$NAME-$v.tar.gz.sha256")
+          script/release-notes "$TAG" > "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md"
+
+      - name: GitHub Release
+        if: env.DRY_RUN != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="${TAG#v}"; pre=""; [[ "$TAG" == *-rc.* ]] && pre="--prerelease"
+          gh release create "$TAG" --verify-tag $pre --title "$NAME $v" --notes-file "$RUNNER_TEMP/notes.md" \
+            "$RUNNER_TEMP/$NAME-$v.tar.gz" "$RUNNER_TEMP/$NAME-$v.tar.gz.sha256"
+
+      - name: Homebrew tap
+        if: env.DRY_RUN != 'true' && !contains(env.TAG, '-rc.')
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: script/update-tap "$TAG"

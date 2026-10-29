@@ -1,0 +1,118 @@
+#!/bin/bash
+# script/release: cut a release from main. Runs the tests, sets the version,
+# writes the changelog from Conventional Commits, commits, tags and pushes.
+# Pushing the tag starts the Release workflow (GitHub Release + Homebrew tap).
+#
+#   script/release                 next version from the commits (feat → minor, fix → patch, ! → major)
+#   script/release patch|minor|major|X.Y.Z
+#   script/release minor --rc      a release candidate: vX.Y.Z-rc.N (GitHub pre-release, tap untouched)
+#   script/release --promote       promote the release candidate on HEAD to vX.Y.Z (same commit)
+#   add --dry-run to see the plan without changing anything, --yes to skip the prompt
+set -euo pipefail
+cd "$(dirname "$0")/.."
+NAME="trafficlight"
+CLI="bin/$NAME"
+
+bump=auto rc=0 promote=0 dry=0 yes=0
+for a in "$@"; do
+  case "$a" in
+    --rc) rc=1 ;; --promote) promote=1 ;; --dry-run) dry=1 ;; --yes|-y) yes=1 ;;
+    patch|minor|major|auto) bump="$a" ;;
+    [0-9]*.[0-9]*.[0-9]*) bump="$a" ;;
+    *) echo "unknown argument: $a" >&2; exit 1 ;;
+  esac
+done
+
+say()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
+die()  { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+run()  { if [ $dry = 1 ]; then echo "    (dry run) $*"; else "$@"; fi; }
+confirm() { [ $yes = 1 ] || [ $dry = 1 ] && return 0; read -rp "$1 [y/N] " r; [ "$r" = y ] || [ "$r" = Y ] || die "cancelled"; }
+
+# ── Preconditions ─────────────────────────────────────────────────────────────
+[ "$(git branch --show-current)" = main ] || die "releases are cut from main"
+[ -z "$(git status --porcelain)" ] || die "uncommitted changes; commit or stash them first"
+git fetch -q origin main --tags
+[ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] || die "main is not in sync with origin/main (pull or push first)"
+
+current=$(grep -m1 '^VERSION=' "$CLI" | cut -d'"' -f2)
+last=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | grep -v -- - | head -1 || true)
+
+# ── Promote: the release candidate on HEAD becomes the release ───────────────
+if [ $promote = 1 ]; then
+  cand=$(git tag --points-at HEAD -l 'v*-rc.*' --sort=-v:refname | head -1)
+  [ -n "$cand" ] || die "HEAD has no release candidate tag to promote"
+  final="${cand%%-rc.*}"
+  git rev-parse -q --verify "refs/tags/$final" >/dev/null && die "$final already exists"
+  say "Promote $cand → $final (same commit $(git rev-parse --short HEAD))"
+  confirm "Tag and push $final?"
+  run git tag -a "$final" -m "$NAME ${final#v}"
+  run git push origin "$final"
+  say "Pushed $final. The Release workflow publishes it and updates the Homebrew tap."
+  exit 0
+fi
+
+# ── Next version ──────────────────────────────────────────────────────────────
+range="${last:+$last..}HEAD"
+subjects=$(git log --format='%s%n%b' $range | grep -v '^$' || true)
+[ -n "$(git log --format=%s $range)" ] || die "no commits since ${last:-the start}"
+IFS=. read -r MA MI PA <<<"${last#v}"; MA=${MA:-0}; MI=${MI:-0}; PA=${PA:-0}
+if [ "$bump" = auto ]; then
+  if grep -qE '^[a-z]+(\([^)]*\))?!:|BREAKING CHANGE' <<<"$subjects"; then bump=major
+  elif grep -qE '^feat(\([^)]*\))?:' <<<"$subjects"; then bump=minor
+  else bump=patch; fi
+fi
+case "$bump" in
+  major) next="$((MA + 1)).0.0" ;; minor) next="$MA.$((MI + 1)).0" ;; patch) next="$MA.$MI.$((PA + 1))" ;;
+  *) next="$bump" ;;
+esac
+[[ "$next" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "not a semantic version: $next"
+tag="v$next"
+if [ $rc = 1 ]; then
+  n=$(git tag -l "$tag-rc.*" | sed 's/.*-rc\.//' | sort -n | tail -1); tag="$tag-rc.$(( ${n:-0} + 1 ))"
+fi
+git rev-parse -q --verify "refs/tags/$tag" >/dev/null && die "$tag already exists"
+
+# ── Changelog section from Conventional Commits ───────────────────────────────
+section() {
+  local feats fixes other
+  feats=$(git log --format='%s' $range | sed -nE 's/^feat(\(([^)]*)\))?!?: (.*)/- \3/p')
+  fixes=$(git log --format='%s' $range | sed -nE 's/^fix(\(([^)]*)\))?!?: (.*)/- \3/p')
+  other=$(git log --format='%s' $range | grep -vE '^(feat|fix)(\([^)]*\))?!?:|^chore\(release\)' | sed 's/^/- /' || true)
+  echo "## [$next] - $(date +%Y-%m-%d)"
+  [ -n "$feats" ] && printf '\n### Features\n\n%s\n' "$feats"
+  [ -n "$fixes" ] && printf '\n### Fixes\n\n%s\n' "$fixes"
+  [ -n "$other" ] && printf '\n### Other\n\n%s\n' "$other"
+  return 0
+}
+
+say "Release $NAME $tag  (last release: ${last:-none}, code version: $current)"
+echo; section | sed 's/^/    /'; echo
+confirm "Run the tests, commit, tag and push $tag?"
+
+say "Running the tests"
+if [ $dry = 0 ]; then ./test/run.sh >/tmp/$NAME-release-tests.log 2>&1 || { tail -20 /tmp/$NAME-release-tests.log; die "tests failed"; }; fi
+say "Setting the version to $next"
+if [ $dry = 0 ]; then
+  sed -i '' "s/^VERSION=\".*\"/VERSION=\"$next\"/" "$CLI"
+  [ -f CHANGELOG.md ] || printf '# Changelog\n\nAll notable changes, newest first. Versions follow [Semantic Versioning](https://semver.org).\n' > CHANGELOG.md
+  # Replace an existing section for this version (a new release candidate), or add one at the top.
+  python3 - "$next" "$(section)" <<'PY'
+import re, sys
+ver, new = sys.argv[1], sys.argv[2].rstrip() + "\n"
+s = open("CHANGELOG.md").read()
+pat = re.compile(r"^## \[" + re.escape(ver) + r"\].*?(?=^## \[|\Z)", re.S | re.M)
+if pat.search(s): s = pat.sub(new + "\n", s, count=1)
+else:
+    m = re.search(r"^## \[", s, re.M)
+    s = (s[:m.start()] + new + "\n" + s[m.start():]) if m else (s.rstrip() + "\n\n" + new)
+open("CHANGELOG.md", "w").write(s)
+PY
+fi
+run git add "$CLI" CHANGELOG.md
+run git commit -q -m "chore(release): $tag"
+run git tag -a "$tag" -m "$NAME ${tag#v}"
+run git push -q origin main "$tag"
+say "Pushed $tag. The Release workflow takes it from here:"
+echo "    https://github.com/samhudson/$NAME/actions"
+[ $rc = 1 ] && echo "    Try it, then promote it with: script/release --promote"
+exit 0

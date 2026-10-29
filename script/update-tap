@@ -1,0 +1,41 @@
+#!/bin/bash
+# script/update-tap vX.Y.Z: point the Homebrew formula at a released version.
+# Public repo: the release's source tarball and its SHA-256 (Homebrew's
+# standard). Private repo: the git tag and commit, which needs repo access.
+# Pushes to samhudson/homebrew-tap with $TAP_TOKEN (CI) or your git login.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+NAME="trafficlight"
+REPO="samhudson/$NAME"
+TAP="samhudson/homebrew-tap"
+TAG="${1:?usage: script/update-tap vX.Y.Z}"
+[[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "only final releases go to the tap (got $TAG)"; exit 1; }
+
+if [ -n "${TAP_TOKEN:-}" ]; then url="https://x-access-token:$TAP_TOKEN@github.com/$TAP.git"
+elif [ -n "${CI:-}" ]; then echo "::warning::TAP_TOKEN is not set, so the Homebrew tap was not updated. See RELEASING.md."; exit 0
+else url="https://github.com/$TAP.git"; fi
+
+work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
+git clone -q --depth 1 "$url" "$work/tap"
+formula="$work/tap/Formula/$NAME.rb"
+
+visibility=$(GH_TOKEN="${GH_TOKEN:-${TAP_TOKEN:-}}" gh api "repos/$REPO" --jq .visibility 2>/dev/null || echo unknown)
+if [ "$visibility" = public ]; then
+  tarball="https://github.com/$REPO/archive/refs/tags/$TAG.tar.gz"
+  sha=$(curl -fsSL "$tarball" | shasum -a 256 | cut -d' ' -f1)
+  source=$(printf '  url "%s"\n  sha256 "%s"' "$tarball" "$sha")
+else
+  rev=$(git rev-parse "$TAG^{commit}")
+  source=$(printf '  url "https://github.com/%s.git",\n      tag:      "%s",\n      revision: "%s"' "$REPO" "$TAG" "$rev")
+fi
+# Replace everything from the url line up to (not including) the license line.
+SOURCE="$source" perl -0pi -e 's/^  url .*?(?=^  license )/$ENV{SOURCE}\n/ms' "$formula"
+grep -q "$TAG" "$formula" || { echo "formula update failed"; exit 1; }
+
+cd "$work/tap"
+if git diff --quiet; then echo "tap already at $TAG"; exit 0; fi
+git -c user.name="${GIT_AUTHOR_NAME:-$(git config user.name || echo github-actions)}" \
+    -c user.email="${GIT_AUTHOR_EMAIL:-$(git config user.email || echo github-actions@users.noreply.github.com)}" \
+    commit -qam "$NAME ${TAG#v}"
+git push -q origin HEAD:main
+echo "tap updated: $NAME ${TAG#v} ($visibility source)"
